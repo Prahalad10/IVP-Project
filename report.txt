@@ -1,0 +1,452 @@
+Hint-Guided Video Frame Interpolation for Video Compression
+Pan Tan
+Portland State University
+Portland, Oregon, USA
+ptan@pdx.edu
+Abstract
+Traditional video compression continues to advance, but the gains
+in efficiency are diminishing and come at the cost of higher compu-
+tational complexity. Despite achieving competitive rate-distortion
+results, current neural video codecs (NVCs) generally lack sup-
+port for a wide range of quality levels, often requiring multiple
+models to achieve flexible rate control, which increases both train-
+ing cost and deployment complexity. To address the limitations of
+both traditional codecs and current NVCs, we propose a hybrid
+video compression framework that integrates traditional codecs
+with hint-guided video frame interpolation (VFI), a learning-based
+technique for synthesizing intermediate frames. By using decoded
+reference frames and leveraging compressed-domain hints to guide
+interpolation, our method improves both motion compensation
+and reconstruction quality. This design combines the efficiency
+of traditional codecs with the adaptability of neural interpolation,
+achieving consistent rate-distortion performance and supporting a
+wide range of quality levels on standard benchmarks.
+CCS Concepts
+• Computing methodologies →Reconstruction.
+Keywords
+Video compression, video frame interpolation
+ACM Reference Format:
+Pan Tan and Wu-chi Feng. 2025. Hint-Guided Video Frame Interpolation
+for Video Compression. In ACM Multimedia Asia (MMAsia ’25), December
+09–12, 2025, Kuala Lumpur, Malaysia. ACM, New York, NY, USA, 7 pages.
+https://doi.org/10.1145/3743093.3771081
+1 Introduction
+Video has become the dominant form of online content, driven
+by the rapid growth of streaming, real-time conferencing, and im-
+mersive applications such as virtual and augmented reality. With
+ongoing trends toward higher resolutions, frame rates, and richer
+content, the demand for efficient video delivery continues to rise.
+Given the large share of video traffic, even small improvements in
+compression efficiency can yield substantial benefits for storage
+and transmission systems.
+Wu-chi Feng
+Portland State University
+Portland, Oregon, USA
+wuchi@pdx.edu
+Traditional video compression standards such as H.264 [36],
+HEVC [34], and VVC [3] have been extensively optimized, achiev-
+ing excellent rate–distortion performance through hierarchical pre-
+diction, refined motion compensation, and bidirectional referencing.
+However, these gains come at the cost of increased computational
+complexity. Neural video codecs (NVCs) [8, 11–14, 16, 17, 19, 26,
+28, 29, 38, 41] have gained attention as alternatives to traditional
+codecs by learning spatial-temporal patterns directly from data and
+adapting flexibly to diverse content. However, their rate-distortion
+trade-off is generally narrow, and most methods require separate
+models to cover a wide range of quality levels. This not only in-
+creases training cost but also leads to larger overall model size (e.g.,
+parameters and weights), which adds to deployment complexity,
+particularly in resource-constrained environments.
+Video frame interpolation (VFI) offers another way to reduce bi-
+trate by transmitting only keyframes and synthesizing intermediate
+frames [37]. While this approach can achieve substantial savings
+when the interpolated frames are of high fidelity, existing VFI mod-
+els often struggle with occlusions, motion blur, or large temporal
+gaps, leading to visible artifacts and degraded quality. To overcome
+these limitations, we propose a hint-guided video frame interpola-
+tion (HGVFI) framework for practical integration into compression
+pipelines. In our design, keyframes are encoded using a traditional
+codec, while intermediate frames are reconstructed by a neural
+interpolation model guided by low-resolution, compressed repre-
+sentations of the target frame. These hints provide structural cues
+that help the model resolve motion ambiguities and maintain ro-
+bustness in challenging scenarios, including degraded references or
+large temporal distances, making the method suitable for real-world
+video compression.
+In summary, our main contributions are: 1) We propose a hint-
+guided video frame interpolation (HGVFI) framework that incorpo-
+rates compressed keyframes and low-resolution hints for efficient
+integration into multimedia systems; 2) We demonstrate that infor-
+mative hint frames can effectively compensate for reduced keyframe
+quality, enabling accurate and robust interpolation under occlusions
+and complex motion; 3) We apply the proposed HGVFI framework
+to video compression and validate its effectiveness across diverse
+video content, achieving improved rate-distortion performance
+compared to representative traditional codecs.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+MMAsia ’25, Kuala Lumpur, Malaysia
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2005-5/25/12
+https://doi.org/10.1145/3743093.3771081
+2 Related Work
+2.1 Traditional Video Codecs
+Traditional video compression standards have undergone several
+generations of standardization and refinement. While each newer
+version introduced various configurable settings, the core mecha-
+nisms have remained the block-based transform coding and motion
+estimation. Intra-coded frames, which can be decoded without any
+MMAsia ’25, December 09–12, 2025, Kuala Lumpur, Malaysia Trovato et al.
+Figure 1: Visual comparison on challenging Vimeo90K test triplets. Compared to existing frame interpolation methods, H.264
+better handles occlusion and large motion.
+other data, are compressed using a method very similar to JPEG [35].
+Using Discrete Cosine Transform (DCT) and quantization, and by
+introducing predictive coded frames (P-frames) and bi-directional
+coded frames (B-frames), video codecs can take advantage of tem-
+poral redundancy between frames by coding a motion vector and
+possibly a residual to the closest visual match. Each newer ver-
+sion offered improved coding efficiency at similar quality levels
+compared to its predecessor, but also introduced increased computa-
+tional complexity. Emerging formats such as 4K/8K resolution and
+High Dynamic Range (HDR) video demand significantly higher data
+rates, which traditional codecs like H.264/AVC [36] often struggle
+to compress efficiently. Newer standards such as H.265/HEVC [34]
+and H.266/VVC [3] have been designed to address these demands,
+offering improved compression efficiency at the cost of increased
+computational complexity and limited support on legacy devices.
+2.2 Learning-based Video Codecs
+With advances in general-purpose GPUs and deep learning, learned
+video compression has emerged as a promising alternatives to tra-
+ditional hybrid coding frameworks. Early works such as DVC [19]
+replaced each component of conventional codecs, including motion
+estimation, prediction, and residual coding, with neural network-
+based modules that are jointly optimized under a rate-distortion
+objective. This residual-based architecture has since been widely
+adopted. Subsequent studies [1, 5, 7, 14–16, 20, 28] further improved
+key components such as optical flow estimation, entropy modeling,
+and temporal prediction. To better handle complex motion and
+improve compensation in the feature domain, techniques including
+multi-reference frames, scale-space flow, deformable convolutions,
+and attention mechanisms have been introduced.
+In parallel, recent efforts [6, 11–13, 18, 22, 26, 31] have shifted
+from pixel-domain residual coding to conditional modeling in the
+latent space. This strategy enables more flexible use of temporal
+context by learning correlations from previously decoded frames,
+without relying on explicit residual subtraction. Such latent-space
+modeling has led to significant gains in compression efficiency. This
+trend is exemplified by the DCVC family of models [11, 12], which
+leverage high-dimensional temporal features to improve entropy
+estimation and motion compensation.
+Figure 2: Representative examples from the Vimeo90K test
+set. Each row shows the first and third frames of a triplet,
+which serve as input VFI. These involve occlusion and com-
+plex motion, making them particularly challenging for
+interpolation-based methods that aim to reconstruct the
+missing intermediate frame (Frame 1).
+Our approach shares similarities with Wu et al.’s work [37] by
+using interpolation for video compression. However, we do not
+adopt a hierarchical structure, nor do we explicitly utilize motion
+or residual information. Instead, we introduce a low-resolution
+hint frame that conveys coarse content information to guide the
+interpolation process. With the keyframes and low-resolution hint
+frames encoded using a traditional codec, our framework not only
+retains the codec’s flexibility to support a wide range of quality lev-
+els, but also achieves better compression efficiency by synthesizing
+higher-quality intermediate frames without introducing additional
+bitrate overhead.
+3 Guided Video Frame Interpolation
+3.1 Motivation
+Video frame interpolation (VFI) synthesizes intermediate frames
+from two or more adjacent references, allowing compression schemes
+Hint-Guided Video Frame Interpolation for Video Compression MMAsia ’25, December 09–12, 2025, Kuala Lumpur, Malaysia
+Figure 3: Overview of our proposed architecture. The hint frame is first processed by the PixelShuffle-driven upsampling
+module and subsequently utilized in two ways: alongside the reference frames in the VFI baseline and within the context-aware
+feature extraction module. The outputs from these branches are then merged in the Refine module to produce the final output.
+to transmit keyframes while reconstructing the rest via interpo-
+lation. However, interpolation accuracy remains sensitive to oc-
+clusion, motion blur, and non-linear motion (e.g., rotation or per-
+spective changes). Although methods such as DAIN [2], FILM [27],
+and XVFI [33] have made progress, their robustness on diverse
+real-world sequences is still limited.
+To illustrate these limitations in video compression, Figure 2
+shows two examples from the Vimeo90K test set [40], where Frame
+1 is synthesized from Frames 0 and 2. In one case, a girl’s hand is
+occluded in Frame 0 but visible in Frame 2; in another, a dog de-
+scends stairs with varying leg visibility, creating motion ambiguity.
+Despite pristine references, state-of-the-art interpolation models
+such as EMA-VFI [42] and IFRNet [9] fail to reconstruct these oc-
+cluded or fast-moving regions (Figure 1). In contrast, H.264 yields
+more coherent results through bidirectional motion compensation
+and residuals. While traditional codecs are less expressive than neu-
+ral networks, their block-based mechanisms often produce more
+stable results under challenging conditions, albeit at lower coding
+efficiency.
+Building on the above observation, motion and residual infor-
+mation are essential for reconstructing high-fidelity frames under
+occlusion and large motion. However, integrating such signals into
+learned predictive coding frameworks often requires complex archi-
+tectures or multiple models to cover diverse quality levels. As an al-
+ternative, we introduce hint frames: downsampled and compressed
+versions of the target frames encoded with traditional codecs. These
+auxiliary frames provide structural guidance for interpolation, en-
+abling the model to resolve motion ambiguities and occlusions. Our
+hybrid framework combines conventionally encoded keyframes and
+hint frames to reconstruct intermediate frames, achieving robust
+synthesis with minimal bitrate overhead.
+3.2 Architectural Overview
+The overall framework of the proposed hint-guided video frame
+interpolation (HGVFI) is illustrated in Figure 3. In the standard VFI
+setting, given three consecutive frames 𝐼0, 𝐼1, and 𝐼2, the model
+predicts 𝐼1 using 𝐼0 and 𝐼2 as inputs. In contrast, our method first
+compresses all three frames using a traditional video codec (e.g.,
+H.264), as shown in Equation (1):
+𝐼𝑝
+0 ,𝐼𝑝
+1 ,𝐼𝑝
+2
+= Compress(𝐼0,𝐼1,𝐼2), (1)
+To provide additional structural and motion cues while minimizing
+bitrate overhead, we further generate a compact hint frame by
+applying bicubic downsampling to the decoded intermediate frame
+𝐼𝑝
+1 , as shown in Equation (2):
+𝐼hint
+1 = Downsamplebicubic (𝐼𝑝
+1 ), (2)
+The guided VFI network then takes the two reference frames 𝐼𝑝
+0
+and 𝐼𝑝
+2 , along with the hint frame 𝐼hint
+1 , to predict the intermediate
+frameˆ
+𝐼1, as defined in Equation (3):
+ˆ
+𝐼1 = VFIguided (𝐼𝑝
+0 ,𝐼𝑝
+2 ,𝐼hint
+1 ). (3)
+As defined above, the hint frame 𝐼hint
+1 provides additional guid-
+ance for synthesizing the intermediate frame. However, due to its
+reduced spatial resolution, directly using the hint may limit its
+effectiveness in capturing fine-grained details. To address this, we
+introduce two key modules designed to better incorporate the hint
+into the interpolation process. First, instead of using fixed bicubic
+upsampling, which often introduces artifacts and blur, we employ
+a learnable upsampling module jointly optimized with the over-
+all network. Second, the upsampled hint is processed through a
+dedicated branch, enabling the model to extract explicit motion
+and appearance cues. This design not only improves interpolation
+quality but also supports modular integration into a wide range of
+video compression pipelines.
+3.2.1 Learnable Upsampling via PixelShuffle. We use a learnable up-
+sampling module based on convolutional neural networks (CNNs)
+and the PixelShuffle operation [32]. As illustrated in Figure 3, we
+first apply a convolutional layer to extract shallow features and
+MMAsia ’25, December 09–12, 2025, Kuala Lumpur, Malaysia Trovato et al.
+(a) Selected sequences from UVG dataset (b) SI–TI plot of selected sequences
+Figure 4: (a) Selected sequences from the UVG dataset and (b) their corresponding spatial (SI) and temporal (TI) complexities.
+increase the number of channels. These features are then progres-
+sively upsampled through two stages, each consisting of a residual
+attention block (RAB) [39] for capturing global context, followed
+by PixelShuffle for spatial upscaling. Each PixelShuffle operation
+increases the spatial resolution by a factor of 2, efficiently con-
+verting channel depth into spatial dimensions. This depth-to-space
+transformation is both computationally efficient and effective at
+preserving fine details. The entire upsampling module is trained
+jointly with the VFI model, allowing it to adapt to diverse motion
+and content patterns.
+Upsampling is formally defined as follows. Let the input hint
+frame be 𝐼hint
+1 ∈Rˆ
+𝐻×ˆ
+𝑊×𝐶. A convolutional layer Φ is first applied
+to extract shallow features and increase the number of channels:
+𝐹hint
+1 = Φ(𝐼hint
+1 )
+We then increase the spatial resolution through a sequence of
+residual attention blocks (RAB) [39] and PixelShuffle operations.
+The procedure is as follows:
+(1) A RAB is applied to enhance contextual representation:
+𝐹(1)
+rab = RAB1 (𝐹hint
+1 )
+(2) Apply PixelShuffle with a scale factor of 2 to upsample the
+feature maps:
+architecture [30]. U-Net is a fully convolutional network with an en-
+coder–decoder structure and skip connections, originally developed
+for medical image segmentation. In our design, the progressively
+upsampled hint features from different stages of the learnable up-
+sampling module are injected into both the encoder and decoder
+via skip connections. This enables the reuse of multi-scale con-
+textual features throughout the network, helping preserve spatial
+structures and maintain consistency during interpolation.
+We selected EMA-VFI [42] as our VFI baseline due to its strong
+ability to model motion and appearance via inter-frame attention, as
+well as its efficiency in both runtime and memory usage. To support
+our hint-guided framework, we extended EMA-VFI to incorporate
+a third input that provides additional structural guidance. EMA-
+VFI offers two variants: a full-size model and a compact version
+with half the number of Transformer blocks. We adopt the compact
+variant to reduce computational cost and training time, as the hint
+already supplies rich motion and appearance cues. As shown in
+Figure 3, we modify RefineNet in EMA-VFI to take the interpolated
+results and contextual features from the hint as inputs, producing
+the final output. All other components remain consistent with the
+original EMA-VFI configuration.
+𝐹(1)
+ps
+= PixelShuffle(𝐹(1)
+rab )
+(3) Steps 1 and 2 are repeated to reach the final resolution:
+𝐼upsampled
+1
+= PixelShuffle(RAB2 (𝐹(1)
+ps ))
+To further refine the output features, an additional RAB is ap-
+plied after the final upsampling. In our implementation, since the
+hint frame 𝐼hint
+1 is downsampled to one-quarter of the original res-
+olution in both spatial dimensions, we apply two upsampling steps
+to recover its full size 𝐻 ×𝑊.
+3.2.2 Context-aware Feature Extraction Module. This module, to-
+gether with the upsampling module, forms the hint branch. The
+hint branch operates independently from the main branch shown
+in Figure 3. To extract structural context from the hint frame, we
+design a Context-aware Feature Extraction Module based on a U-Net
+4 Experiment Setup
+In this section, we evaluate our proposed approach on both video
+frame interpolation and video compression. For frame interpola-
+tion, we compare against state-of-the-art methods on datasets in-
+cluding Vimeo90K [40] and SNU-FILM [4]. For video compression,
+we benchmark our method against widely used industry-standard
+codecs, including H.264 [36] and HEVC [34].
+To generate training data for our hint-guided interpolation model,
+we use H.264 with a constant rate factor (CRF) set to 23. Although
+HEVC generally achieves higher compression efficiency, its signifi-
+cantly higher computational cost poses challenges for large scale
+data processing. Therefore, we use H.264 to compress our training
+dataset. During evaluation, we follow the settings used in [11] for
+benchmarking H.264 and HEVC (via x264 and x265, respectively)
+with FFmpeg in veryslow mode, except that we set the GOP size to
+16 to match our framework’s configuration.
+Hint-Guided Video Frame Interpolation for Video Compression MMAsia ’25, December 09–12, 2025, Kuala Lumpur, Malaysia
+Figure 5: Visual comparison on the Vimeo90K triplet set. ‘GT’ denotes the highlighted region from the ground truth image.
+‘H.264’ refers to the frame compressed with H.264 at a qp setting of 23.
+4.1 Dataset
+4.1.1 Frame Interpolation Dataset. We train our hint-guided VFI
+model on the Vimeo90K dataset [40], which is also used by the
+baseline EMA-VFI [42]. The training set consists of 51,312 triplets
+of 448×256 resolution, each containing three PNG images (im1.png,
+im2.png, im3.png), with im2.png typically used as the ground truth.
+For evaluation, we use the Vimeo90K test set and the SNU-FILM
+dataset, containinh 3,782 triplets in the same format as the training
+data [4]. SNU-FILM offers 1,240 triplets at 1280×720 resolution
+and defines four difficulty levels (Easy, Medium, Hard, Extreme)
+according to the temporal distance between input frames. These
+differences enable evaluation under varying motion complexities.
+4.1.2 Video Compression Dataset. In order to evaluate the perfor-
+mance of our video frame interpolation model in video compression,
+we used six videos that have a resolution option of 1920x1080 pixels
+from the open Ultra Video Group (UVG) dataset [23]. Each video
+has 600 frames and is captured at 120 fps. We used all the frames
+from each video for testing. Our final evaluation dataset covers a
+diverse set of motion types, including local, global, and crowded
+motion. Figure 4(a) shows the thumbnails of the videos selected
+for our experiments. Additionally, Figure 4(b) presents the spatial
+and temporal complexity of each video, as measured by the Video
+Complexity Analyzer [21]. Higher values indicate greater complex-
+ity (in either spatial dimension, temporal dimension, or both). As
+shown, the selected videos span a wide range of motion and texture
+complexity, covering both simple and highly challenging scenarios.
+We encoded the videos using a wide range of CRF values, in-
+cluding 3, 6, 9, 12, 15, 18, 21, 231, 24, 28, 32, 34, 36, 40, 44, and 48,
+with a GOP size of 16. Each GOP was processed individually. In
+our setting, each GOP contains only one I-frame at the beginning,
+followed by a series of B-frames.
+4.2 Experiment Results
+4.2.1 Single Frame Interpolation Results. To evaluate our model’s
+performance in single-frame interpolation, we compared it against
+several state-of-the-art VFI models, including ABME [25], IFR-
+Net [9], and EMA-VFI [42], as well as classical methods such as
+CAIN [4] and SepConv [24]. As shown in Table 1, our model con-
+sistently achieves competitive or superior PSNR and SSIM scores
+across multiple datasets.
+One major bottleneck in applying VFI directly to video com-
+pression is its limited ability to handle complex motion. To assess
+our method’s robustness, we evaluate it on the SNU-FILM dataset,
+which includes subsets with increasing temporal distances and mo-
+tion complexity. Our model performs strongly on the Hard and
+Extreme subsets (temporal gaps of 8 and 16 frames), where hint
+frames help resolve motion ambiguity and occlusion. On the Easy
+subset (temporal gaps of 2 frames), the improvement is smaller, but
+our model still achieves a 0.21 dB gain over the baseline.
+We further present visual comparisons in Figure 5. In the figure,
+the red boxes highlight regions where our model demonstrates
+clear advantages. Under challenging conditions such as occlusions
+or large motion, methods like EMA-VFI [42] and IFRNet [9] often
+produce blurry or distorted frames. H.264, while preserving struc-
+tural details, introduces noticeable blocking artifacts. Notably, our
+method generates visually sharper and more coherent results.
+Unlike other models that operate on pristine input frames, our
+method is trained and evaluated on decompressed H.264 sequences
+(CRF = 23), which inherently contain compression artifacts and
+noise. This setup better reflects real-world scenarios, where trans-
+mitted frames are often subject to lossy compression. Despite being
+compressed, the hint frames still provide useful motion and ap-
+pearance cues, enabling more accurate interpolation. These results
+demonstrate that our method is robust to lossy inputs and suitable
+for integration into practical video compression pipelines.
+1The default CRF value for FFmpeg’s H.264 encoder.
+4.2.2 Video Compression Results with Interpolation. We evaluate
+the effectiveness of our guided frame interpolation framework in
+the context of video compression. Figure 6 shows the rate–distortion
+curves across all six sequences. Our method consistently outper-
+forms H.264 and HEVC in PSNR, demonstrating its robustness and
+practical viability. In particular, for challenging sequences such as
+MMAsia ’25, December 09–12, 2025, Kuala Lumpur, Malaysia Trovato et al.
+Methods Vimeo90K test SNU-FILM (easy) SNU-FILM (medium) SNU-FILM (hard) SNU-FILM (extreme)
+ToFlow[40] 33.73/0.9682 39.08/0.9890 34.39/0.9740 28.44/0.9180 23.39/0.8310
+AdaCoF[10] 34.47/0.9730 39.80/0.9900 35.05/0.9754 29.46/0.9244 24.31/0.8439
+SepConv[24] 33.79/0.9702 39.41/0.9900 34.97/0.9762 29.36/0.9253 24.31/0.8448
+CAIN[4] 34.65/0.9730 39.89/0.9900 35.61/0.9776 29.90/0.9292 24.78/0.8507
+DAIN[2] 34.71/0.9756 39.73/0.9902 35.46/0.9780 30.17/0.9335 25.09/0.8584
+XVFI[33] 35.07/0.9760 39.76/0.9991 35.12/0.9769 29.30/0.9245 23.98/0.8417
+ABME[25] 36.18/0.9805 39.59/0.9901 35.77/0.9789 30.58/0.9364 25.42/0.8639
+IFRNet[9] 35.80/0.9794 40.03/0.9905 35.94/0.9793 30.41/0.9358 25.05/0.8587
+EMA-VFI-small[42] 36.07/0.9797 39.81/0.9906 35.88/0.9795 30.69/0.9375 25.47/0.8632
+EMA-VFI[42] 36.64/0.9819 39.98/0.9910 36.09/0.9801 30.94/0.9392 25.69/0.8661
+Ours 38.69/0.9885 40.02/0.9917 37.12/0.9650 34.17/0.9698 33.37/0.9486
+Table 1: Quantitative comparison (PSNR, SSIM) of different methods on the Vimeo90K dataset [40] and SNU-FILM dataset [4].
+Figure 6: Rate-Distortion Curves on selected videos
+YachtRide and ReadySetGo, our HGVFI performs remarkably well,
+where the hint provides valuable cues for complex motion.
+These results suggest that our framework holds strong potential
+as a complementary component to traditional video codecs. By
+integrating our VFI model with existing encoding pipelines, we can
+leverage the efficiency and standardization of traditional codecs
+while enhancing interpolation quality using a single trained model.
+This hybrid approach enables wide-range quality support without
+retraining, making it especially suitable for scenarios requiring flexi-
+ble bitrate adaptation, such as streaming over constrained networks
+or deployment on resource-limited devices.
+5 Conclusion
+In this paper, we propose a hint-guided video frame interpolation
+(HGVFI) framework tailored for integration into practical video
+compression systems. By transmitting full-resolution keyframes
+via traditional codecs and reconstructing intermediate frames using
+a VFI model guided by carefully selected hint frames, our method
+achieves a strong balance between compression efficiency and re-
+construction quality. Although the hints are lightweight and com-
+pressed, they provide crucial structural cues that enhance interpola-
+tion robustness, particularly under challenging scenarios such as oc-
+clusions and large temporal distances. Extensive experiments show
+that our framework surpasses traditional codecs in rate-distortion
+performance, confirming its effectiveness in real-world applications.
+Furthermore, by leveraging conventional codecs, our approach nat-
+urally supports a wide range of quality levels without requiring
+multiple models, addressing a key limitation of current neural video
+codecs. Moving forward, we plan to explore more compact and
+adaptive hint generation strategies to further reduce bitrate while
+preserving visual fidelity, with the goal of making the framework
+more efficient and broadly deployable.
