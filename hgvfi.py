@@ -1,13 +1,6 @@
-#!/usr/bin/env python3
-"""
-Proper Hint-Guided Video Frame Interpolation (HGVFI) Implementation
-Based on the paper: "Hint-Guided Video Frame Interpolation for Video Compression"
-Implements proper EMA-VFI backbone with PixelShuffle+RAB hint upsampler and U-Net-style injection.
-"""
-
 import os
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import numpy as np
-from pathlib import Path
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -19,6 +12,7 @@ import subprocess
 # ============================================================================
 # Utility Functions (preserved from original)
 # ============================================================================
+
 
 def load_vimeo_triplet(dataset_root, test_list_file, limit=None):
     """Load Vimeo90K triplet dataset"""
@@ -34,7 +28,11 @@ def load_vimeo_triplet(dataset_root, test_list_file, limit=None):
             im2_path = os.path.join(seq_dir, "im2.png")
             im3_path = os.path.join(seq_dir, "im3.png")
 
-            if os.path.exists(im1_path) and os.path.exists(im2_path) and os.path.exists(im3_path):
+            if (
+                os.path.exists(im1_path)
+                and os.path.exists(im2_path)
+                and os.path.exists(im3_path)
+            ):
                 data.append((im1_path, im2_path, im3_path))
 
     return data
@@ -54,25 +52,60 @@ def compress_frame_h264(frame_np, crf=23):
 
     # Encode to H.264
     encode_proc = subprocess.Popen(
-        ['ffmpeg', '-y', '-loglevel', 'error',
-         '-f', 'rawvideo', '-vcodec', 'rawvideo',
-         '-s', f'{w}x{h}', '-pix_fmt', 'rgb24',
-         '-i', 'pipe:0',
-         '-vcodec', 'libx264', '-crf', str(crf), '-preset', 'ultrafast',
-         '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov',
-         'pipe:1'],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-vcodec",
+            "rawvideo",
+            "-s",
+            f"{w}x{h}",
+            "-pix_fmt",
+            "rgb24",
+            "-i",
+            "pipe:0",
+            "-vcodec",
+            "libx264",
+            "-crf",
+            str(crf),
+            "-preset",
+            "ultrafast",
+            "-f",
+            "mp4",
+            "-movflags",
+            "frag_keyframe+empty_moov",
+            "pipe:1",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     encoded, _ = encode_proc.communicate(raw)
 
     # Decode from H.264
     decode_proc = subprocess.Popen(
-        ['ffmpeg', '-y', '-loglevel', 'error',
-         '-i', 'pipe:0', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        [
+            "ffmpeg",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     decoded_raw, _ = decode_proc.communicate(encoded)
-    decoded = np.frombuffer(decoded_raw[:h * w * 3], dtype=np.uint8).reshape(h, w, 3)
+    decoded = np.frombuffer(decoded_raw[: h * w * 3], dtype=np.uint8).reshape(h, w, 3)
     return decoded.astype(np.float32) / 255.0
 
 
@@ -129,8 +162,10 @@ def compute_metrics(gt, pred):
 # Loss Function
 # ============================================================================
 
+
 class CharbonnierLoss(nn.Module):
     """Charbonnier loss: robust loss function commonly used in VFI"""
+
     def __init__(self, eps=1e-6):
         super().__init__()
         self.eps = eps
@@ -143,6 +178,7 @@ class CharbonnierLoss(nn.Module):
 # ============================================================================
 # Model Components for Proper EMA-VFI Architecture
 # ============================================================================
+
 
 class ResidualAttentionBlock(nn.Module):
     """Residual Attention Block (RAB) used in hint upsampler"""
@@ -191,21 +227,16 @@ class HintBranch(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # Initial conv: 3 channels -> 64 channels
         self.init_conv = nn.Conv2d(3, 64, 3, padding=1)
-
-        # First upsampling stage: 1/4 -> 1/2 resolution
-        self.rab1 = ResidualAttentionBlock(64)
-        self.ps1 = nn.PixelShuffle(2)  # 64ch @ H/4 -> 16ch @ H/2
-        self.reconv1 = nn.Conv2d(16, 64, 3, padding=1)
-
-        # Second upsampling stage: 1/2 -> full resolution
-        self.rab2 = ResidualAttentionBlock(64)
-        self.ps2 = nn.PixelShuffle(2)  # 64ch @ H/2 -> 16ch @ H
-        self.reconv2 = nn.Conv2d(16, 64, 3, padding=1)
-
-        # Final refinement at full resolution
-        self.rab3 = ResidualAttentionBlock(64)
+        # Stage 1: H/4 → H/2  — Conv(64→256) → PixelShuffle(2) → 64ch
+        self.rab1    = ResidualAttentionBlock(64)
+        self.pre_ps1 = nn.Conv2d(64, 256, 3, padding=1)
+        self.ps1     = nn.PixelShuffle(2)
+        # Stage 2: H/2 → H   — Conv(64→256) → PixelShuffle(2) → 64ch
+        self.rab2    = ResidualAttentionBlock(64)
+        self.pre_ps2 = nn.Conv2d(64, 256, 3, padding=1)
+        self.ps2     = nn.PixelShuffle(2)
+        self.rab3    = ResidualAttentionBlock(64)
 
     def forward(self, hint):
         """
@@ -214,24 +245,14 @@ class HintBranch(nn.Module):
         Returns:
             s1: (B, 64, H/4, W/4)
             s2: (B, 64, H/2, W/2)
-            s3: (B, 64, H, W)
+            s3: (B, 64, H,   W  )
         """
-        # Initial conv
-        f = F.relu(self.init_conv(hint))  # (B, 64, H/4, W/4)
-
-        # First upsampling stage
-        s1 = self.rab1(f)  # (B, 64, H/4, W/4) - save as skip feature
-        f = self.ps1(s1)  # (B, 16, H/2, W/2)
-        f = F.relu(self.reconv1(f))  # (B, 64, H/2, W/2)
-
-        # Second upsampling stage
-        s2 = self.rab2(f)  # (B, 64, H/2, W/2) - save as skip feature
-        f = self.ps2(s2)  # (B, 16, H, W)
-        f = F.relu(self.reconv2(f))  # (B, 64, H, W)
-
-        # Final refinement
-        s3 = self.rab3(f)  # (B, 64, H, W)
-
+        f  = F.relu(self.init_conv(hint))           # (B, 64, H/4, W/4)
+        s1 = self.rab1(f)                           # (B, 64, H/4, W/4)
+        f  = F.relu(self.ps1(self.pre_ps1(s1)))     # (B, 64, H/2, W/2)
+        s2 = self.rab2(f)                           # (B, 64, H/2, W/2)
+        f  = F.relu(self.ps2(self.pre_ps2(s2)))     # (B, 64, H,   W  )
+        s3 = self.rab3(f)                           # (B, 64, H,   W  )
         return s1, s2, s3
 
 
@@ -325,61 +346,94 @@ class WarpLayer(nn.Module):
         grid_y, grid_x = torch.meshgrid(
             torch.linspace(-1, 1, H, device=feat.device),
             torch.linspace(-1, 1, W, device=feat.device),
-            indexing='ij'
+            indexing="ij",
         )
         grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(0)  # (1, H, W, 2)
         grid = grid.expand(B, -1, -1, -1)
 
         # Apply flow to grid
         flow_normalized = flow.permute(0, 2, 3, 1)  # (B, H, W, 2)
-        flow_normalized = flow_normalized / torch.tensor([W / 2, H / 2], device=feat.device)
+        flow_normalized = flow_normalized / torch.tensor(
+            [W / 2, H / 2], device=feat.device
+        )
 
         sampling_grid = grid + flow_normalized
 
         # Warp
-        warped = F.grid_sample(feat, sampling_grid, mode='bilinear', align_corners=True)
+        warped = F.grid_sample(feat, sampling_grid, mode="bilinear", align_corners=True)
 
         return warped
 
 
 class EMAVFIBackbone(nn.Module):
     """
-    EMA-VFI backbone: Encoder-decoder with cross-frame attention at coarse scale.
-    Compact variant: 4 Transformer blocks instead of 8.
+    EMA-VFI backbone: encoder-decoder with cross-frame attention at coarse scale.
+
+    Bug fixes applied vs. original:
+      1. enc1 accepts 3 channels — frames are encoded separately so CFA receives
+         independent f0 / f2 feature streams (was: 6-ch concatenated input →
+         self-attention on mixed features, not cross-frame attention).
+      2. CFA blocks now attend Q=f0_features, K/V=f2_features (was: both Q and
+         K/V were the same tensor — pure self-attention, no cross-frame signal).
+      3. Estimated flow is upsampled and used to warp frame0 / frame2 toward
+         t=0.5; the warped blend is averaged with the decoder output to form the
+         coarse prediction (was: flow assigned to `_` and silently discarded).
+      4. coarse_head is a registered nn.Module parameter (was: nn.Conv2d()
+         instantiated inside forward() — new random weights on every call,
+         never trained).
     """
 
     def __init__(self):
         super().__init__()
 
-        # Encoder: 4 stride-2 convs (full -> 1/2 -> 1/4 -> 1/8)
-        self.enc1 = nn.Conv2d(6, 32, 3, stride=1, padding=1)  # Full res
-        self.enc2 = nn.Conv2d(32, 64, 3, stride=2, padding=1)  # 1/2 res
-        self.enc3 = nn.Conv2d(64, 128, 3, stride=2, padding=1)  # 1/4 res
+        # FIX 1: 3-channel input — each frame encoded independently with shared weights
+        self.enc1 = nn.Conv2d(3,   32,  3, stride=1, padding=1)  # Full res
+        self.enc2 = nn.Conv2d(32,  64,  3, stride=2, padding=1)  # 1/2 res
+        self.enc3 = nn.Conv2d(64,  128, 3, stride=2, padding=1)  # 1/4 res
         self.enc4 = nn.Conv2d(128, 256, 3, stride=2, padding=1)  # 1/8 res
 
-        # Hint adapters (inject hint skip features into encoder AND decoder, per paper)
-        # Encoder adapters (inject hint into encoder at matching scales)
-        self.hint_adapter_enc3 = nn.Conv2d(128 + 64, 128, 1)  # S1 (1/4) into e3 (1/4)
-        self.hint_adapter_enc2 = nn.Conv2d(64 + 64, 64, 1)    # S2 (1/2) into e2 (1/2)
-        self.hint_adapter_enc1 = nn.Conv2d(32 + 64, 32, 1)    # S3 (full) into e1 (full)
-        # Decoder adapters (inject hint into decoder at matching scales)
-        self.hint_adapter_dec3 = nn.Conv2d(128 + 64, 128, 1)  # S1 (1/4) into d3 (1/4)
-        self.hint_adapter_dec2 = nn.Conv2d(64 + 64, 64, 1)    # S2 (1/2) into d2 (1/2)
-        self.hint_adapter_dec1 = nn.Conv2d(32 + 64, 32, 1)    # S3 (full) into d1 (full)
+        # Hint adapters — encoder path (inject hint into each frame's encoding)
+        self.hint_adapter_enc1 = nn.Conv2d(32  + 64, 32,  1)  # S3 (full) into e1
+        self.hint_adapter_enc2 = nn.Conv2d(64  + 64, 64,  1)  # S2 (1/2)  into e2
+        self.hint_adapter_enc3 = nn.Conv2d(128 + 64, 128, 1)  # S1 (1/4)  into e3
+        # Hint adapters — decoder path
+        self.hint_adapter_dec3 = nn.Conv2d(128 + 64, 128, 1)  # S1 (1/4)  into d3
+        self.hint_adapter_dec2 = nn.Conv2d(64  + 64, 64,  1)  # S2 (1/2)  into d2
+        self.hint_adapter_dec1 = nn.Conv2d(32  + 64, 32,  1)  # S3 (full) into d1
 
-        # Cross-frame attention blocks at 1/8 scale (8 blocks = full variant)
-        self.cfa_blocks = nn.ModuleList([
-            CrossFrameAttention(256, num_heads=8) for _ in range(8)
-        ])
+        # Cross-frame attention blocks at 1/8 scale
+        self.cfa_blocks = nn.ModuleList(
+            [CrossFrameAttention(256, num_heads=8) for _ in range(8)]
+        )
 
-        # Flow estimator on attended features
+        # FIX 3: flow estimator — results will now be used for warping
         self.flow_estimator = FlowEstimator(256)
         self.warp_layer = WarpLayer()
 
         # Decoder: stride-2 transposed convs (1/8 -> 1/4 -> 1/2 -> full)
-        self.dec3 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)  # 1/8 -> 1/4
-        self.dec2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)  # 1/4 -> 1/2
-        self.dec1 = nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1)  # 1/2 -> full
+        self.dec3 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)
+        self.dec2 = nn.ConvTranspose2d(128, 64,  4, stride=2, padding=1)
+        self.dec1 = nn.ConvTranspose2d(64,  32,  4, stride=2, padding=1)
+
+        # FIX 4: registered coarse prediction head (was instantiated in forward())
+        self.coarse_head = nn.Conv2d(32, 3, 3, padding=1)
+
+    def _encode_frame(self, frame, s1, s2, s3):
+        """Encode a single frame through the shared encoder with hint injection."""
+        e1 = F.relu(self.enc1(frame))
+        if s3 is not None:
+            e1 = self.hint_adapter_enc1(torch.cat([e1, s3], dim=1))
+
+        e2 = F.relu(self.enc2(e1))
+        if s2 is not None:
+            e2 = self.hint_adapter_enc2(torch.cat([e2, s2], dim=1))
+
+        e3 = F.relu(self.enc3(e2))
+        if s1 is not None:
+            e3 = self.hint_adapter_enc3(torch.cat([e3, s1], dim=1))
+
+        e4 = F.relu(self.enc4(e3))
+        return e4
 
     def forward(self, frame0, frame2, hint_features=None):
         """
@@ -390,72 +444,51 @@ class EMAVFIBackbone(nn.Module):
             coarse_pred: (B, 3, H, W)
             decoder_feat: List of decoder features for refinement
         """
-        # Concatenate frames for encoder
-        x = torch.cat([frame0, frame2], dim=1)  # (B, 6, H, W)
+        s1, s2, s3 = hint_features if hint_features is not None else (None, None, None)
 
-        # Encoder with hint injection at matching scales (per paper: inject into both encoder and decoder)
-        e1 = F.relu(self.enc1(x))  # (B, 32, H, W)
-        if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S3 (full res) into e1 (full res)
-            e1 = torch.cat([e1, s3], dim=1)
-            e1 = self.hint_adapter_enc1(e1)
+        # FIX 2: encode each frame independently so CFA gets separate f0 / f2 streams
+        e4_0 = self._encode_frame(frame0, s1, s2, s3)  # (B, 256, H/8, W/8)
+        e4_2 = self._encode_frame(frame2, s1, s2, s3)  # (B, 256, H/8, W/8)
 
-        e2 = F.relu(self.enc2(e1))  # (B, 64, H/2, W/2)
-        if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S2 (1/2 res) into e2 (1/2 res)
-            e2 = torch.cat([e2, s2], dim=1)
-            e2 = self.hint_adapter_enc2(e2)
+        # Cross-frame attention: Q from frame0 features, K/V from frame2 features
+        e4_att = e4_0
+        for blk in self.cfa_blocks:
+            e4_att = blk(e4_att, e4_2)
 
-        e3 = F.relu(self.enc3(e2))  # (B, 128, H/4, W/4)
-        if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S1 (1/4 res) into e3 (1/4 res)
-            e3 = torch.cat([e3, s1], dim=1)
-            e3 = self.hint_adapter_enc3(e3)
-
-        e4 = F.relu(self.enc4(e3))  # (B, 256, H/8, W/8)
-
-        # Cross-frame attention blocks
-        # Split e4 into two halves for f0 and f2 features (simplified approach)
-        # For true bidirectional attention, we'd need separate encodings
-        # Here, we apply attention symmetrically
-        B, C, H, W = e4.shape
-        e4_att = e4
-        for cfa_block in self.cfa_blocks:
-            # Attend from e4 to itself (simplified; ideally would split f0/f2)
-            e4_att = cfa_block(e4_att, e4_att)
-
-        # Flow estimation at 1/8 scale
+        # FIX 3: estimate flow and use it to warp frames toward t=0.5
         flow_coarse = self.flow_estimator(e4_att)  # (B, 4, H/8, W/8)
+        H_full, W_full = frame0.shape[2], frame0.shape[3]
+        H_c,    W_c    = flow_coarse.shape[2], flow_coarse.shape[3]
+        scale_h, scale_w = H_full / H_c, W_full / W_c
+        flow_up = F.interpolate(flow_coarse, size=(H_full, W_full),
+                                mode='bilinear', align_corners=False)
+        # Scale flow magnitudes from coarse-pixel to full-pixel units
+        flow_up = flow_up * torch.tensor(
+            [scale_w, scale_h, scale_w, scale_h], device=flow_up.device
+        ).view(1, 4, 1, 1)
+        # Warp each reference frame halfway toward t=0.5
+        warped0 = self.warp_layer(frame0, flow_up[:, :2] * 0.5)
+        warped2 = self.warp_layer(frame2, flow_up[:, 2:] * 0.5)
+        warped_blend = (warped0 + warped2) * 0.5  # (B, 3, H, W)
 
-        # Decoder with warping and hint injection
-        d3 = F.relu(self.dec3(e4_att))  # (B, 128, H/4, W/4)
+        # Decoder with hint injection
+        d3 = F.relu(self.dec3(e4_att))
         if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S1 is at 1/4, same as d3 - inject here
-            d3 = torch.cat([d3, s1], dim=1)
-            d3 = self.hint_adapter_dec3(d3)
+            d3 = self.hint_adapter_dec3(torch.cat([d3, s1], dim=1))
 
-        d2 = F.relu(self.dec2(d3))  # (B, 64, H/2, W/2)
+        d2 = F.relu(self.dec2(d3))
         if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S2 is at 1/2, same as d2 - inject here
-            d2 = torch.cat([d2, s2], dim=1)
-            d2 = self.hint_adapter_dec2(d2)
+            d2 = self.hint_adapter_dec2(torch.cat([d2, s2], dim=1))
 
-        d1 = F.relu(self.dec1(d2))  # (B, 32, H, W)
+        d1 = F.relu(self.dec1(d2))
         if hint_features is not None:
-            s1, s2, s3 = hint_features
-            # S3 is at full res, same as d1 - inject here
-            d1 = torch.cat([d1, s3], dim=1)
-            d1 = self.hint_adapter_dec1(d1)
+            d1 = self.hint_adapter_dec1(torch.cat([d1, s3], dim=1))
 
-        # Coarse prediction
-        coarse_pred = torch.sigmoid(nn.Conv2d(32, 3, 3, padding=1).to(d1.device)(d1))
+        # FIX 4: use registered coarse_head; blend with flow-warped estimate
+        coarse_decoder = torch.sigmoid(self.coarse_head(d1))
+        coarse_pred = torch.clamp(0.5 * coarse_decoder + 0.5 * warped_blend, 0.0, 1.0)
 
-        return coarse_pred, [d1]  # Return decoder feat for refinement
+        return coarse_pred, [d1]
 
 
 class RefineNet(nn.Module):
@@ -512,10 +545,14 @@ class HintGuidedVFI(nn.Module):
             output: (B, 3, H, W) - interpolated frame
         """
         # Extract hint features at 3 scales
-        s1, s2, s3 = self.hint_branch(hint)  # (B,64,H/4,W/4), (B,64,H/2,W/2), (B,64,H,W)
+        s1, s2, s3 = self.hint_branch(
+            hint
+        )  # (B,64,H/4,W/4), (B,64,H/2,W/2), (B,64,H,W)
 
         # Run backbone with hint injection
-        coarse_pred, decoder_feats = self.backbone(frame0, frame2, hint_features=(s1, s2, s3))
+        coarse_pred, decoder_feats = self.backbone(
+            frame0, frame2, hint_features=(s1, s2, s3)
+        )
 
         # Refine
         output = self.refine(coarse_pred, s3, decoder_feats[0])
@@ -526,6 +563,7 @@ class HintGuidedVFI(nn.Module):
 # ============================================================================
 # Evaluation Function (preserved)
 # ============================================================================
+
 
 def evaluate(model, dataset, device, num_samples=None):
     """Evaluate model on dataset"""
@@ -568,15 +606,17 @@ def evaluate(model, dataset, device, num_samples=None):
             ssim_scores.append(ssim)
 
             if (idx + 1) % 100 == 0:
-                print(f"  [{idx + 1}/{min(num_samples, len(dataset))}] PSNR: {psnr:.2f}, SSIM: {ssim:.4f}")
+                print(
+                    f"  [{idx + 1}/{min(num_samples, len(dataset))}] PSNR: {psnr:.2f}, SSIM: {ssim:.4f}"
+                )
 
     avg_psnr = np.mean(psnr_scores)
     avg_ssim = np.mean(ssim_scores)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"Average PSNR: {avg_psnr:.4f} dB")
     print(f"Average SSIM: {avg_ssim:.4f}")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
 
     return avg_psnr, avg_ssim, psnr_scores, ssim_scores
 
@@ -588,7 +628,7 @@ def evaluate(model, dataset, device, num_samples=None):
 if __name__ == "__main__":
     print("Running shape contract tests...\n")
 
-    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}\n")
 
     # Test 1: HintBranch shapes
@@ -631,6 +671,6 @@ if __name__ == "__main__":
     print(f"  Expected: ~3.5M (backbone ~3M + hint ~460K + refine ~70K)")
     print(f"  ✓ Parameter count reasonable\n")
 
-    print("="*60)
+    print("=" * 60)
     print("All shape tests PASSED!")
-    print("="*60)
+    print("=" * 60)

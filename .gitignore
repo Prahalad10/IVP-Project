@@ -218,3 +218,6 @@ __marimo__/
 # Dataset
 vimeo_triplet
 report.*
+
+# Pytorch model files
+*.pt
