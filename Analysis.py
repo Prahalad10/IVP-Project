@@ -853,7 +853,11 @@ def run_training(
 
 
 model1 = HintGuidedVFI().to(device)
-history = run_training(train_paths, test_paths, model1, device, num_epochs=8, limit=4000)
+
+_aux = test_paths[:100]
+_train_paths = train_paths[:3900] + _aux
+
+history = run_training(_train_paths, test_paths, model1, device, num_epochs=8, limit=4000)
 
 
 # In[38]:
